@@ -5,6 +5,7 @@
 
 ;; Keywords: lisp
 ;; Version: 0
+;; Package-Requires: ((emacs "29.1"))
 
 ;; Permission is hereby granted, free of charge, to any person obtaining a copy
 ;; of this software and associated documentation files (the "Software"), to deal
@@ -31,11 +32,16 @@
 
 ;;; Code:
 
-
-(require 'lsp-mode)
+(require 'jsonrpc)
+(require 'eglot)
 
 (defvar lsp-isar-caret-last-post-command-position 0
   "Holds the cursor position from the last run of post-command-hooks.")
+
+(defvar lsp-isar-caret--last-buffer nil "Holds the buffer of the last position update.")
+
+(defvar lsp-isar-caret--last-line nil "Holds the line of the last position update.")
+(defvar lsp-isar-caret--last-column nil "Holds the char of the last position update.")
 
 (define-inline lsp-isar-caret-update-struct (uri line char focus)
   "Make a Caret_Update object for the given LINE and CHAR.
@@ -54,43 +60,32 @@ interface Caret_Update {
 (define-inline lsp-isar-caret-cur-column ()
   (inline-quote (- (point) (line-beginning-position))))
 
-(defun lsp-isar-caret--buffer-uri ()
-  "Return URI of the current buffer."
-  (or lsp-buffer-uri
-      (lsp--path-to-uri
-       (or buffer-file-name (ignore-errors (buffer-file-name (buffer-base-buffer)))))))
 
-(define-inline lsp-isar-caret-cur-caret_update ()
-  "Make a Caret_Update object for the current point."
-  (inline-quote
-   (save-restriction
-     (widen)
-     (lsp-isar-caret-update-struct
-      (lsp-isar-caret--buffer-uri)
-      (lsp-isar-caret-cur-line)
-      (lsp-isar-caret-cur-column)
-      1))))
-
-(defun lsp-isar-caret--send-caret-update ()
-  "Notify Isabelle about the current caret position."
-  (let ((my-message (lsp-make-notification "PIDE/caret_update" (lsp-isar-caret-cur-caret_update))))
-    (lsp-send-notification my-message)))
-
-(defun lsp-isar-caret-update-caret-position ()
-  "Notify Isabelle about the carrent position if needed.
-
-Test if the position has changed.  If it has changed, then
-launch the timer to update send the notification in the near future."
-  (when (boundp 'lsp--cur-workspace)
-    (lsp-isar-caret--send-caret-update)))
+(defun lsp-isar-caret--update-position-eglot ()
+  "Notify Isabelle about current position if needed.
+Test if we have a server connection and caret position has changed"
+  (when (eq major-mode 'isar-mode)
+    (let ((server (eglot-current-server)))
+      (when server
+        (let ((buffer (or (buffer-base-buffer) (current-buffer)))
+              (line (lsp-isar-caret-cur-line))
+              (column (save-restriction (widen) (lsp-isar-caret-cur-column))))
+          (unless (and
+                   (eq buffer lsp-isar-caret--last-buffer)
+                   (eql line lsp-isar-caret--last-line)
+                   (eql column lsp-isar-caret--last-column))
+            (setq lsp-isar-caret--last-buffer buffer)
+            (setq lsp-isar-caret--last-line line)
+            (setq lsp-isar-caret--last-column column)
+            (let ((uri (eglot-path-to-uri (buffer-file-name buffer))))
+              (jsonrpc-notify server "PIDE/caret_update" `(:uri ,uri :line ,line :character ,column :focus 1)))))))))
 
 
 ;; https://stackoverflow.com/questions/26544696/an-emacs-cursor-movement-hook-like-the-javascript-mousemove-event
 (defun lsp-isar-caret-activate-caret-update ()
   "Initialize automatic update of caret position."
-  (add-to-list 'post-command-hook #'lsp-isar-caret-update-caret-position)
-  (lsp-isar-caret--send-caret-update))
-
+  (add-hook post-command-hook #'lsp-isar-caret--update-position-eglot)
+  (lsp-isar-caret--update-position-eglot))
 
 (provide 'lsp-isar-caret)
 

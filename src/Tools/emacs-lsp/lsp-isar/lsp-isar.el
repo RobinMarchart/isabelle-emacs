@@ -6,7 +6,7 @@
 
 ;; Keywords: lisp
 ;; Version: 0
-;; Package-Requires: ((emacs "25.1") (lsp-mode "7.0") (transient "0.1.0"))
+;; Package-Requires: ((emacs "29.1") (transient "0.1.0"))
 
 ;; Permission is hereby granted, free of charge, to any person obtaining a copy
 ;; of this software and associated documentation files (the "Software"), to deal
@@ -31,19 +31,16 @@
 ;; blabla
 
 ;;; Code:
-
-(require 'lsp-protocol)
-(require 'lsp-mode)
-(require 'tramp)
+(require 'eglot)
 (require 'transient)
 
 (require 'lsp-isar-caret)
-(require 'lsp-isar-decorations)
+;; (require 'lsp-isar-decorations)
 ;; (require 'lsp-isar-find-theorems)
 (require 'lsp-isar-indent)
-(require 'lsp-isar-output)
+;; (require 'lsp-isar-output)
 (require 'lsp-isar-parse-args)
-(require 'lsp-isar-progress)
+;; (require 'lsp-isar-progress)
 
 (defcustom lsp-isar-init-hook nil
   "List of functions to be called after Isabelle has been started."
@@ -113,18 +110,15 @@ you can decide at startup what you want."
   (when (equal major-mode 'isar-mode)
     ;; delayed decoration printing
     (lsp-isar-caret-activate-caret-update)
-    (lsp-isar-decorations-activate-delayed-printing)
+    ;; (lsp-isar-decorations-activate-delayed-printing)
     (unless lsp-isar-already-initialised
-      (lsp-isar-output-initialize-output-buffer)
-      (lsp-isar-progress-activate-progress-update)
-      (lsp-isar-decorations--init-decorations)
+      ;; (lsp-isar-output-initialize-output-buffer)
+      ;; (lsp-isar-progress-activate-progress-update)
+      ;; (lsp-isar-decorations--init-decorations)
       (run-hooks 'lsp-isar-init-hook)
       (setq lsp-isar-already-initialised t))))
 
-;; lsp-after-initialize-hook might look like the right macro.  However, the
-;; workspace (lsp--cur-workspace) is not opened yet.
-(add-hook 'lsp-after-open-hook
-	  'lsp-isar-initialise)
+(add-hook 'eglot-managed-mode-hook (lambda () (when (eglot-managed-p) (lsp-isar-initialise))))
 
 (defvar lsp-isar--already-split nil
   "Boolean to indicate if we have already split the window.")
@@ -136,9 +130,9 @@ you can decide at startup what you want."
   "Split motif for the columns."
   :type
   '(choice
-     (const :tag "Split in two columns" lsp-isar-split-pattern-two-columns)
-     (const :tag "Split in three columns (with progress on the right)"
-	    lsp-isar-split-pattern-three-columns))
+    (const :tag "Split in two columns" lsp-isar-split-pattern-two-columns)
+    (const :tag "Split in three columns (with progress on the right)"
+	   lsp-isar-split-pattern-three-columns))
   :group 'isabelle);;
 
 ;; taken from
@@ -257,98 +251,11 @@ Set `lsp-isabelle-options' for other options (like importing the AFP)."
    lsp-vscode-options
    lsp-isabelle-options))
 
-;; tramp fixes for emacs 28 (i.e. devel)
-;; fix for Emacs 28 (https://github.com/emacs-lsp/lsp-mode/issues/2514#issuecomment-759452037)
-(defun start-file-process-shell-command@around (start-file-process-shell-command name buffer &rest args)
-  "Start a program in a subprocess and returs the process object.
-
-Return the process object for it. Similar to
- `start-process-shell-command', but calls `start-file-process'."
-  (let ((command (mapconcat 'identity args " ")))
-    (funcall start-file-process-shell-command name buffer command)))
-
-(when (>= emacs-major-version 28)
-  (advice-add 'start-file-process-shell-command :around #'start-file-process-shell-command@around)
-
-  ;; work-around to make sure no brace is lost during transmission
-  ;; see https://github.com/emacs-lsp/lsp-mode/issues/2375
-  (defun lsp-tramp-connection (local-command &optional generate-error-file-fn)
-    "Create LSP stdio connection named name.
-LOCAL-COMMAND is either list of strings, string or function which
-returns the command to execute."
-    ;; Force a direct asynchronous process.
-    (add-to-list 'tramp-connection-properties
-		 (list (regexp-quote (file-remote-p default-directory))
-                       "direct-async-process" t))
-    (list :connect (lambda (filter sentinel name environment-fn _workspace)
-                     (let* ((final-command (lsp-resolve-final-function
-					    local-command))
-                            (_stderr (or (when generate-error-file-fn
-                                           (funcall generate-error-file-fn name))
-					 (format "/tmp/%s-%s-stderr" name
-						 (cl-incf lsp--stderr-index))))
-                            (process-name (generate-new-buffer-name name))
-                            (process-environment
-                             (lsp--compute-process-environment environment-fn))
-                            (proc (make-process
-                                   :name process-name
-                                   :buffer (format "*%s*" process-name)
-                                   :command final-command
-                                   :connection-type 'pipe
-                                   :coding 'no-conversion
-                                   :noquery t
-                                   :filter filter
-                                   :sentinel sentinel
-                                   :file-handler t)))
-                       (cons proc proc)))
-          :test? (lambda () (-> local-command lsp-resolve-final-function
-				lsp-server-present?)))))
-
-
 (defun lsp-isar-define-client ()
-  "Define the LSP client for isar mode.
-
-If `lsp-isar-parse-args-tramp' is t, then the lsp client is registered as
-remote in order to edit files remotely over tramp.  Remember that
-`lsp-isar-parse-args-tramp' uses a different configuration.
-
-Set `lsp-remote-isabelle-options' and `lsp-isabelle-options' to
-the AFP and other options."
-  ;;(message "installing config (tramp: %s)" (if lsp-isar-parse-args-tramp "Yes" "No"))
-  ;; declare the lsp mode
-  (push  '(isar-mode .  "isabelle") lsp-language-id-configuration)
-
-  (if lsp-isar-parse-args-tramp
-      (lsp-register-client
-       (make-lsp-client
-	:new-connection (lsp-tramp-connection 'lsp-full-remote-isabelle-path)
-	:major-modes '(isar-mode)
-	:server-id 'lsp-isar
-	:priority 1
-	:remote? t
-	:path->uri-fn (lambda (path) (lsp--path-to-uri-1 (funcall lsp-isar-file-name-follow-links path)))
-	:uri->path-fn (lambda (path) (funcall lsp-isar-file-name-unfollow-links (lsp--uri-to-path-1 path)))
-	:notification-handlers
-	(lsp-ht
-	 ("PIDE/decoration" #'lsp-isar-decorations-update-and-reprint)
-	 ("PIDE/dynamic_output" #'lsp-isar-output-update-state-and-output-buffer)
-	 ("PIDE/progress" #'lsp-isar-progress--update-buffer))))
-
-    (lsp-register-client
-     (make-lsp-client
-      :new-connection (lsp-stdio-connection 'lsp-full-isabelle-path)
-      :major-modes '(isar-mode)
-      :server-id 'lsp-isar
-      :priority 1
-      :path->uri-fn (lambda (path) (lsp--path-to-uri-1 (funcall lsp-isar-file-name-follow-links path)))
-      :uri->path-fn (lambda (path) (funcall lsp-isar-file-name-unfollow-links (lsp--uri-to-path-1 path)))
-      :library-folders-fn (lambda (_workspace) (list "/local/home/salt/isabelle/afp-devel" "/local/home/salt/isabelle/emacs_isabelle/isabelle-release"))
-      :notification-handlers
-      (lsp-ht
-       ("PIDE/decoration" #'lsp-isar-decorations-update-and-reprint)
-       ("PIDE/dynamic_output" #'lsp-isar-output-update-state-and-output-buffer)
-       ("PIDE/progress" #'lsp-isar-progress--update-buffer))))))
-
+  "Configure LSP client for isar-mode with eglot."
+  (add-to-list 'eglot-server-programs `(isar-mode . ,(lsp-full-isabelle-path)))
+  ;; TODO add handlers for special events
+  )
 
 ;;;###autoload
 (defun lsp-isar-define-client-and-start ()
@@ -368,8 +275,7 @@ mode automically, use `(add-hook \\='isar-mode-hook
     (unless lsp-isar--already-defined-client
       (lsp-isar-define-client)
       (setq lsp-isar--already-defined-client t))
-    (lsp)))
-
+    (eglot-ensure)))
 
 ;; although the communication to the LSP server is done using utf-16,
 ;; we can only use utf-8
@@ -384,8 +290,7 @@ mode automically, use `(add-hook \\='isar-mode-hook
 
 
 (defun lsp-isar-activate-experimental-features ()
-  "Activate experimental features."
-  )
+  "Activate experimental features.")
 
 (add-hook 'isar-mode-hook #'lsp-isar-activate-experimental-features)
 
